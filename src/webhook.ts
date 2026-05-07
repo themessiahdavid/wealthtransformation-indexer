@@ -24,18 +24,27 @@ export class WebhookError extends Error {
   }
 }
 
-// HMAC-SHA256 over the raw JSON body. The IAT side signs/verifies the same way
-// (mirrors PR 3 webhook handler in apps/api/src/routes/webhooks/wt.ts).
-export function signBody(secret: string, body: string): string {
-  return createHmac("sha256", secret).update(body).digest("hex");
+// HMAC-SHA256 over `<timestamp>.<rawBody>` — exactly the format IAT expects.
+// Mirrors apps/api/src/routes/webhooks/wt.ts:verifyWebhookHmac() which
+// computes:  createHmac('sha256', secret).update(`${timestamp}.`).update(rawBody)
+//
+// Timestamp is Unix seconds. IAT rejects stamps >5 min off the server clock
+// to prevent replay.
+export function signBody(secret: string, timestamp: string, body: string): string {
+  return createHmac("sha256", secret).update(`${timestamp}.`).update(body).digest("hex");
 }
 
 // Used by tests only — proves our signature shape is byte-identical to what
 // IAT computes. timingSafeEqual sanity check.
-export function verifySignature(secret: string, body: string, signature: string): boolean {
-  const expected = signBody(secret, body);
-  const a = Buffer.from(expected, "hex");
-  const b = Buffer.from(signature, "hex");
+export function verifySignature(
+  secret: string,
+  timestamp: string,
+  body: string,
+  signature: string,
+): boolean {
+  const expected = signBody(secret, timestamp, body);
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(signature, "utf8");
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
@@ -46,14 +55,16 @@ export async function postWebhook(
   payload: WebhookPayload,
 ): Promise<WebhookResult> {
   const body = JSON.stringify(payload);
-  const signature = signBody(secret, body);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const signature = signBody(secret, timestamp, body);
   const start = Date.now();
 
   const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-WT-Signature": signature,
+      "x-wt-signature": signature,
+      "x-wt-timestamp": timestamp,
       "User-Agent": "wt-indexer/1.0",
     },
     body,

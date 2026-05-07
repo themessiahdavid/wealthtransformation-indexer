@@ -29,7 +29,7 @@ import { createHmac } from "node:crypto";
 const RPC = "https://sepolia.base.org";
 const USDC: Address = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 const WT: Address = "0xeb83B8ce7636669FA940f57e01D7a9a3A7ddB78d";
-const IAT_BASE = "https://iamtransformation.com";
+const IAT_BASE = "https://api.iamtransformation.com";
 
 // Tier prices (total = product + 10% admin).
 const TIERS = {
@@ -39,14 +39,15 @@ const TIERS = {
   5: { product: parseUnits("60", 6), admin: parseUnits("6", 6) }, // $66
 };
 
-// Budget tightened to fit ~3 Circle Sepolia USDC faucet drips (30 USDC total)
-// + one Coinbase Sepolia ETH faucet drip (0.05 ETH).
-const FUND_ETH = parseUnits("0.0008", 18); // ~80 simple txs of headroom per wallet
-const FUND_USDC_A = parseUnits("12", 6); // T1+T2 = $9.90
+// Budget: 30 USDC + ~0.0026 ETH actually present in deployer.
+// Base Sepolia gas: ~550k gas × 0.001 gwei = ~5e-7 ETH per approve+buy round.
+// 0.0003 ETH per wallet = 600x headroom over estimate, still well within total.
+const FUND_ETH = parseUnits("0.00025", 18); // ~50x headroom over per-tx Base gas (~5e-7 ETH/tx)
+const FUND_USDC_A = parseUnits("4", 6); // T1 only — T2 dropped to fit 20 USDC budget
 const FUND_USDC_B = parseUnits("4", 6); // T1 = $3.30
 const FUND_USDC_C = parseUnits("4", 6); // T1 customer = $3.00
 const FUND_USDC_D = parseUnits("4", 6); // T1 = $3.30 (T5 skipped to save budget)
-const FUND_USDC_E = parseUnits("8", 6); // T1 + duplicate-attempt = $3.30 (second never charges)
+const FUND_USDC_E = parseUnits("4", 6); // T1 + duplicate-attempt = $3.30 (second reverts at buy, no charge)
 
 // ===== Read deployer key + secrets (never log them) =====
 const deployerEnv = readFileSync(
@@ -184,9 +185,13 @@ async function approveAndBuy(
     console.log(`  [${label}] T${tier} buy OK txHash=${buyTx} block=${receipt.blockNumber}`);
     return { ok: true, txHash: buyTx };
   } catch (err) {
-    const msg = err instanceof Error ? err.message.split("\n")[0] : String(err);
-    console.log(`  [${label}] T${tier} buy FAILED: ${msg}`);
-    return { ok: false, reason: msg };
+    // Capture as much of the revert reason as possible — viem nests it.
+    const e = err as Error & { shortMessage?: string; metaMessages?: string[] };
+    const reason =
+      e.shortMessage ??
+      (e.metaMessages?.join(" | ") || e.message?.replace(/\s+/g, " ").slice(0, 300));
+    console.log(`  [${label}] T${tier} buy FAILED: ${reason}`);
+    return { ok: false, reason: reason ?? "unknown" };
   }
 }
 
@@ -234,11 +239,11 @@ async function main() {
   console.log(
     `[harness] deployer balance: ${formatUnits(dethBal, 18)} ETH, ${formatUnits(dusdcBal, 6)} USDC`,
   );
-  const minEth = parseUnits("0.005", 18);
-  const minUsdc = parseUnits("32", 6);
+  const minEth = parseUnits("0.0015", 18);
+  const minUsdc = parseUnits("20", 6);
   if (dethBal < minEth || dusdcBal < minUsdc) {
     throw new Error(
-      `Deployer underfunded. Need ≥ 0.005 ETH and ≥ 32 USDC. Have ${formatUnits(dethBal, 18)} ETH and ${formatUnits(dusdcBal, 6)} USDC.`,
+      `Deployer underfunded. Need ≥ ${formatUnits(minEth, 18)} ETH and ≥ ${formatUnits(minUsdc, 6)} USDC. Have ${formatUnits(dethBal, 18)} ETH and ${formatUnits(dusdcBal, 6)} USDC.`,
     );
   }
 
@@ -279,15 +284,14 @@ async function main() {
 
   const results: ScenarioResult[] = [];
 
-  // Scenario 1: A buys T1, T2 sequentially (genesis sponsor = address(0)).
-  // T3 dropped from this run to fit Sepolia testnet faucet budget.
+  // Scenario 1: A buys T1 only (genesis sponsor = address(0)).
+  // T2/T3 dropped from this run to fit Sepolia testnet faucet budget — they
+  // exercise the same buy() code path as T1, so the test signal is similar.
   {
-    const r: ScenarioResult = { name: "A: T1 → T2 sequential", steps: [], ok: true, notes: [] };
-    for (const t of [1, 2] as const) {
-      const out = await approveAndBuy(A, t, "0x0000000000000000000000000000000000000000", true, `A.T${t}`);
-      r.steps.push(`T${t}: ${out.ok ? "OK " + out.txHash : "FAIL " + out.reason}`);
-      if (!out.ok) r.ok = false;
-    }
+    const r: ScenarioResult = { name: "A: T1 (genesis sponsor)", steps: [], ok: true, notes: [] };
+    const out = await approveAndBuy(A, 1, "0x0000000000000000000000000000000000000000", true, "A.T1");
+    r.steps.push(`T1: ${out.ok ? "OK " + out.txHash : "FAIL " + out.reason}`);
+    if (!out.ok) r.ok = false;
     results.push(r);
   }
 

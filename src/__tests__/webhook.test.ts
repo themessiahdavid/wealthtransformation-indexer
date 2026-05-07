@@ -16,31 +16,38 @@ const PAYLOAD: WebhookPayload = {
 };
 
 describe("signBody / verifySignature", () => {
+  const TS = "1714000000";
+
   it("produces deterministic HMAC-SHA256 hex", () => {
-    const sig1 = signBody(SECRET, '{"a":1}');
-    const sig2 = signBody(SECRET, '{"a":1}');
+    const sig1 = signBody(SECRET, TS, '{"a":1}');
+    const sig2 = signBody(SECRET, TS, '{"a":1}');
     expect(sig1).toBe(sig2);
     expect(sig1).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("verifies its own signature", () => {
     const body = JSON.stringify(PAYLOAD);
-    const sig = signBody(SECRET, body);
-    expect(verifySignature(SECRET, body, sig)).toBe(true);
+    const sig = signBody(SECRET, TS, body);
+    expect(verifySignature(SECRET, TS, body, sig)).toBe(true);
   });
 
   it("rejects tampered body", () => {
-    const sig = signBody(SECRET, '{"a":1}');
-    expect(verifySignature(SECRET, '{"a":2}', sig)).toBe(false);
+    const sig = signBody(SECRET, TS, '{"a":1}');
+    expect(verifySignature(SECRET, TS, '{"a":2}', sig)).toBe(false);
+  });
+
+  it("rejects tampered timestamp", () => {
+    const sig = signBody(SECRET, TS, '{"a":1}');
+    expect(verifySignature(SECRET, "1714000001", '{"a":1}', sig)).toBe(false);
   });
 
   it("rejects wrong secret", () => {
-    const sig = signBody(SECRET, '{"a":1}');
-    expect(verifySignature("different-secret", '{"a":1}', sig)).toBe(false);
+    const sig = signBody(SECRET, TS, '{"a":1}');
+    expect(verifySignature("different-secret", TS, '{"a":1}', sig)).toBe(false);
   });
 
   it("rejects mismatched signature length", () => {
-    expect(verifySignature(SECRET, '{"a":1}', "deadbeef")).toBe(false);
+    expect(verifySignature(SECRET, TS, '{"a":1}', "deadbeef")).toBe(false);
   });
 });
 
@@ -60,16 +67,19 @@ describe("postWithRetry", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("sends correct HMAC signature header", async () => {
+  it("sends correct HMAC signature + timestamp headers", async () => {
     fetchSpy.mockResolvedValueOnce(new Response("ok", { status: 200 }));
     await postWithRetry("http://x", SECRET, PAYLOAD, () => {});
     const opts = fetchSpy.mock.calls[0][1] as RequestInit;
     const headers = opts.headers as Record<string, string>;
-    expect(headers["X-WT-Signature"]).toMatch(/^[0-9a-f]{64}$/);
-    // Verify the signature corresponds to the actual body.
+    const ts = headers["x-wt-timestamp"];
+    const sig = headers["x-wt-signature"];
+    expect(sig).toMatch(/^[0-9a-f]{64}$/);
+    expect(ts).toMatch(/^\d{10}$/); // Unix seconds
+    // Verify the signature corresponds to ${ts}.${body}.
     const body = opts.body as string;
-    const expected = signBody(SECRET, body);
-    expect(headers["X-WT-Signature"]).toBe(expected);
+    const expected = signBody(SECRET, ts, body);
+    expect(sig).toBe(expected);
   });
 
   it("retries on 503 and eventually succeeds", async () => {
