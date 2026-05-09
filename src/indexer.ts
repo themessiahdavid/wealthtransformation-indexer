@@ -139,6 +139,27 @@ export async function pollOnce(
       status: result.status,
       durationMs: result.durationMs,
     });
+    // Best-effort fan-out to wt-emails service. Failure here doesn't block the
+    // indexer or the IAT pipeline — the email service is non-critical.
+    if (cfg.emailServiceUrl && cfg.emailHmacSecret) {
+      try {
+        const emailUrl = `${cfg.emailServiceUrl.replace(/\/$/, "")}/v1/internal/purchase-event`;
+        const emailResult = await postWithRetry(emailUrl, cfg.emailHmacSecret, payload, (msg) =>
+          log.warn(`email_${msg}`),
+          3,
+        );
+        log.info("email_sent", {
+          tier: payload.tier,
+          status: emailResult.status,
+          durationMs: emailResult.durationMs,
+        });
+      } catch (err) {
+        log.warn("email_fanout_failed", {
+          tier: payload.tier,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     sent++;
     // Advance state per-event so a crash mid-batch doesn't replay the prior
     // events. IAT is idempotent on (txHash, logIndex), so a replay would be

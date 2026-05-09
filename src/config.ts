@@ -47,6 +47,15 @@ export const config = {
   iatWebhookUrl: required("IAT_WEBHOOK_URL"),
   iatTenantId: required("IAT_TENANT_ID"),
   hmacSecret: loadHmacSecret(required("WT_WEBHOOK_HMAC_SECRET_PATH")),
+
+  // Optional: also fan events to the wt-emails service. Best-effort. If set,
+  // every Purchased event also POSTs to {emailServiceUrl}/v1/internal/purchase-event
+  // with HMAC signed by emailHmacSecret. IAT remains the critical path; email
+  // failures are logged but do not halt processing.
+  emailServiceUrl: process.env["EMAIL_SERVICE_URL"] ?? "",
+  emailHmacSecret: process.env["EMAIL_HMAC_SECRET_PATH"]
+    ? loadHmacSecret(process.env["EMAIL_HMAC_SECRET_PATH"])
+    : "",
   pollIntervalMs: int("POLL_INTERVAL_MS", 12000),
   confirmations: BigInt(int("CONFIRMATIONS", 5)),
   maxBlocksPerQuery: BigInt(int("MAX_BLOCKS_PER_QUERY", 2000)),
